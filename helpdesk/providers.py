@@ -45,11 +45,23 @@ def build_model(settings: Settings) -> OpenAIChatCompletionsModel:
 
 
 def _configure_tracing(settings: Settings) -> None:
-    """Disable SDK tracing when there is no OpenAI key to trace with.
+    """Disable SDK tracing unless the provider is OpenAI.
 
-    Tracing uploads run data to OpenAI's dashboard. On Ollama we have no
-    real key, so leaving it on produces a stream of auth warnings that
-    make real errors hard to spot.
+    Tracing uploads run data to OpenAI's traces dashboard. On Ollama we
+    have no real key, so leaving it on produces a stream of auth warnings
+    that make real errors hard to spot — hence the switch.
+
+    KNOW WHAT THIS MEANS WHEN LLM_PROVIDER=openai. Tracing stays ON, and
+    the SDK exports the run to OpenAI: prompts and completions, the tool
+    calls and their arguments, and the tool results verbatim. For this
+    project that is ticket subjects and bodies, customer email addresses,
+    and internal note text — support data leaving the machine to a second
+    destination besides the model call itself. That is a defensible
+    default for a tutorial and an unacceptable one for real tickets.
+    Call set_tracing_disabled(True) unconditionally if that is your case.
+
+    The check is an inverted allowlist on purpose: any provider other than
+    OpenAI turns tracing off, so adding a provider fails safe.
     """
     if settings.provider != "openai":
         set_tracing_disabled(True)

@@ -10,10 +10,30 @@ Every function returns a string starting with "ok:" or "error:". Errors
 are returned rather than raised on purpose: the model reads the error,
 fixes its input, and retries. Raising would crash the loop instead.
 
-TOOL_SCHEMAS below is written by hand. The Agents SDK generates the same
-thing automatically from type hints and docstrings — comparing the two is
-the fastest way to understand what @function_tool actually does. There is
-a test for exactly that in tests/test_sdk_agent.py.
+TOOL_SCHEMAS below is written by hand. The Agents SDK derives its own
+version from the type hints and docstrings, so comparing the two is the
+fastest way to see what @function_tool actually does. There are tests for
+exactly that in tests/test_sdk_agent.py.
+
+The two are not identical for free, and that is the lesson worth keeping:
+A GENERATED SCHEMA IS ONLY AS PRECISE AS THE TYPES YOU GIVE IT. Annotate
+`department: str` and the SDK emits {"type": "string"} — the four legal
+values survive only as English prose in the description, while the
+hand-written schema carries a real "enum". The two implementations then
+hand the model different contracts. Annotate
+`department: Literal["billing", ...]` and the enum appears. That is why
+the constrained parameters below are Literal, not str.
+
+Two differences remain by design. Strict function calling (the SDK path)
+lists every property in "required" and expresses optionality with a
+"default" key; the hand-written schema just leaves optional parameters out
+of "required". Because of that, status must include "" in its Literal —
+the model has to be able to say "no filter" while still supplying the
+property.
+
+Literal constrains the schema and the type checker. It is NOT enforced by
+Python at runtime, so every function below still normalises and validates
+its own input. A model can send anything; the checks are the real guard.
 """
 from __future__ import annotations
 
@@ -22,6 +42,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
+from typing import Literal
 
 from helpdesk import repository
 from helpdesk.config import load_settings
@@ -117,15 +138,22 @@ def get_ticket(ticket_id: str) -> str:
 
 
 @safe_tool
-def search_tickets(customer_email: str = "", status: str = "") -> str:
+def search_tickets(
+    customer_email: str = "",
+    status: Literal["", "open", "pending", "resolved"] = "",
+) -> str:
     """Search tickets by customer email, by status, or both.
 
+    At least one filter must be non-empty. An empty string means "do not
+    filter on this field", so sending empty strings for both is an error.
     Use this to check a customer's history before recommending a
     department.
 
     Args:
-        customer_email: Email address to filter by. Optional.
-        status: One of open, pending, resolved. Optional.
+        customer_email: Email address to filter by. Empty string means no
+            filter on email.
+        status: One of open, pending, resolved. Empty string means no
+            filter on status.
     """
     if not customer_email and not status:
         return _err(
@@ -145,7 +173,10 @@ def search_tickets(customer_email: str = "", status: str = "") -> str:
 
 
 @safe_tool
-def assign_department(ticket_id: str, department: str) -> str:
+def assign_department(
+    ticket_id: str,
+    department: Literal["billing", "technical", "account", "shipping"],
+) -> str:
     """Propose assigning a ticket to a department. Requires human approval.
 
     Args:
@@ -226,20 +257,29 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "search_tickets",
             "description": (
-                "Search tickets by customer email, by status, or both. Use this "
-                "to check a customer's history before recommending a department."
+                "Search tickets by customer email, by status, or both. At least "
+                "one filter must be supplied and non-empty; leaving a field out "
+                "means no filter on it, and supplying neither is an error. Use "
+                "this to check a customer's history before recommending a "
+                "department."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "customer_email": {
                         "type": "string",
-                        "description": "Email address to filter by. Optional.",
+                        "description": (
+                            "Email address to filter by. Omit it for no filter "
+                            "on email."
+                        ),
                     },
                     "status": {
                         "type": "string",
                         "enum": list(STATUSES),
-                        "description": "Ticket status to filter by. Optional.",
+                        "description": (
+                            "Ticket status to filter by. Omit it for no filter "
+                            "on status."
+                        ),
                     },
                 },
                 "required": [],

@@ -57,7 +57,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             loaded and os.environ is used.
 
     Raises:
-        ConfigError: if the provider is unknown or a required key is absent.
+        ConfigError: if the provider is unknown, a required key is absent,
+            or a value cannot be parsed (for example a non-numeric
+            MAX_TURNS).
     """
     if env is None:
         load_dotenv()  # reads .env into os.environ; no-op if the file is absent
@@ -84,12 +86,24 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         model = env.get("OPENAI_MODEL", "gpt-4o-mini")
         base_url = None
 
+    raw_max_turns = env.get("MAX_TURNS", "8")
+    try:
+        max_turns = int(raw_max_turns)
+    except ValueError:
+        # int() would raise a bare ValueError here, which both entry points
+        # (app.py, run_raw.py) catch nothing of — a typo in .env would show
+        # up as a traceback. Re-raising as ConfigError keeps the promise
+        # this module's docstring makes: one readable failure at startup.
+        raise ConfigError(
+            f"MAX_TURNS must be a whole number, got {raw_max_turns!r}."
+        ) from None
+
     return Settings(
         provider=provider,
         model=model,
         api_key=api_key,
         base_url=base_url,
-        max_turns=int(env.get("MAX_TURNS", "8")),
+        max_turns=max_turns,
         db_path=env.get("DB_PATH", "data/helpdesk.db"),
         chat_db_path=env.get("CHAT_DB_PATH", "data/chat.db"),
     )

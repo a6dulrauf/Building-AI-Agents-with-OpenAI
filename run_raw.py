@@ -23,7 +23,9 @@ def show(kind: str, payload: dict) -> None:
         args = json.dumps(payload["arguments"])
         print(f"{YELLOW}  -> calling {payload['name']}({args}){RESET}")
     elif kind == "tool_result":
-        first_line = payload["result"].splitlines()[0][:100]
+        # `or [""]` because splitlines() on an empty result returns [],
+        # and [0] on that is an IndexError in the printer, of all places.
+        first_line = (payload["result"].splitlines() or [""])[0][:100]
         colour = RED if payload["result"].startswith("error:") else GREY
         print(f"{colour}  <- {first_line}{RESET}")
     elif kind == "rejected":

@@ -11,6 +11,16 @@ exist because an agent is not a chatbot:
    a person decides. Rejecting sends a message back to the model, which
    then reconsiders rather than repeating itself.
 
+   With a capable model. Observed on `llama3.1` (8B): the reject-then-
+   reconsider flow was run twice and behaved differently each time — once
+   the model answered in prose without calling a tool at all, once it
+   called the tool with empty/invalid arguments and skipped the
+   get_ticket lookup the prompt requires first. That is a limit of a small
+   local model's tool use, not a fault in this code: the validation layer
+   in tools.py catches it and hands back a correctable error, which is
+   exactly what that layer is for. A larger local model, or OpenAI's
+   gpt-4o-mini, follows the sequence far more reliably.
+
 Streamlit note: this whole file re-runs top to bottom on every click.
 State that must survive lives in st.session_state; expensive objects are
 built once via @st.cache_resource.
@@ -61,16 +71,40 @@ def render_tool_activity(result) -> list[dict]:
     result.new_items holds everything that happened during the run. We
     pick out the tool calls and their outputs so the UI can show the
     agent's work rather than only its conclusion.
+
+    The `proposed` flag is the fiddly part and it earns its keep. The SDK
+    emits a ToolCallItem for a write BEFORE pausing for approval, so a run
+    that is sitting at the approval gate still lists assign_department
+    here — with no output line, because it has not run. Rendering that
+    beside the calls that did run would tell the reader the opposite of
+    this project's one claim: the agent proposes, it does not perform. So
+    anything whose call_id is still in result.interruptions gets labelled.
     """
+    # call_id can be None on an odd raw item; keep those out so that a
+    # None call_id below does not accidentally match.
+    pending = {
+        item.call_id
+        for item in getattr(result, "interruptions", None) or []
+        if getattr(item, "call_id", None) is not None
+    }
+
     activity: list[dict] = []
     for item in getattr(result, "new_items", []):
         kind = getattr(item, "type", "")
         if kind == "tool_call_item":
+            # Both halves of this chain are load-bearing: ToolCallItem has
+            # no .name of its own (the name lives on .raw_item), and
+            # raw_item shapes vary by tool type.
             name = getattr(item, "name", None) or getattr(
                 getattr(item, "raw_item", None), "name", "tool"
             )
             args = getattr(getattr(item, "raw_item", None), "arguments", "")
-            activity.append({"kind": "call", "name": name, "arguments": args})
+            activity.append({
+                "kind": "call",
+                "name": name,
+                "arguments": args,
+                "proposed": getattr(item, "call_id", None) in pending,
+            })
         elif kind == "tool_call_output_item":
             activity.append({"kind": "output", "output": str(getattr(item, "output", ""))})
     return activity
@@ -83,6 +117,8 @@ def show_activity(activity: list[dict]) -> None:
         for entry in activity:
             if entry["kind"] == "call":
                 st.code(f"{entry['name']}({entry['arguments']})", language="python")
+                if entry.get("proposed"):
+                    st.caption("⏸ proposed — awaiting approval, has not run")
             else:
                 output = entry["output"]
                 if output.startswith("error:"):

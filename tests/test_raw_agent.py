@@ -36,6 +36,18 @@ def _tool_call(call_id, name, args):
     )
 
 
+def _raw_tool_call(call_id, name, raw_arguments):
+    """Like _tool_call, but sends the arguments string through verbatim.
+
+    Needed to script a model that emits something which is not JSON at all.
+    """
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(name=name, arguments=raw_arguments),
+    )
+
+
 def _response(content=None, tool_calls=None):
     message = SimpleNamespace(
         role="assistant",
@@ -165,6 +177,59 @@ def test_an_unknown_tool_name_does_not_crash_the_loop():
     assert out == "Sorry about that."
     tool_messages = [m for m in messages if m.get("role") == "tool"]
     assert tool_messages[0]["content"].startswith("error:")
+
+
+@pytest.mark.parametrize("bad_arguments", ["{not json", "[1, 2]"])
+def test_malformed_tool_arguments_are_blamed_on_the_json_not_on_the_tool(
+    bad_arguments,
+):
+    """The error the model reads must name the mistake the model made.
+
+    A model sometimes emits arguments that are not JSON. Parsing those to
+    {} and calling the tool anyway produced "error: get_ticket failed
+    unexpectedly: get_ticket() missing 1 required positional argument:
+    'ticket_id'" — which points at the tool, not at the broken JSON, and
+    leaves the model no idea what to send instead. Every error string here
+    is meant to be actionable by whoever reads it; this one was not.
+
+    "[1, 2]" is valid JSON and still unusable: func(**arguments) needs a
+    mapping, and a list would raise a TypeError at the call site — outside
+    safe_tool's net, so it would take the whole loop down.
+    """
+    client = FakeClient([
+        _response(tool_calls=[_raw_tool_call("c1", "get_ticket", bad_arguments)]),
+        _response(content="Sorry, let me retry that."),
+    ])
+    messages = raw_agent.new_conversation()
+
+    out = raw_agent.run_conversation(client, "m", messages, approve=lambda *_: True)
+
+    assert out == "Sorry, let me retry that."
+    content = [m for m in messages if m.get("role") == "tool"][0]["content"]
+    assert content.startswith("error:")
+    assert "not valid JSON" in content
+    assert "get_ticket" in content
+    assert "missing 1 required positional argument" not in content
+
+
+def test_genuinely_empty_arguments_still_reach_the_tool():
+    """"{}" is a valid call, not a parse failure — the two must stay apart.
+
+    The fix above must not turn every argument-less call into a JSON
+    error. search_tickets with no filters is a real call that the tool
+    itself rejects, with its own message about needing a filter.
+    """
+    client = FakeClient([
+        _response(tool_calls=[_raw_tool_call("c1", "search_tickets", "{}")]),
+        _response(content="I need a filter."),
+    ])
+    messages = raw_agent.new_conversation()
+
+    raw_agent.run_conversation(client, "m", messages, approve=lambda *_: True)
+
+    content = [m for m in messages if m.get("role") == "tool"][0]["content"]
+    assert "at least one filter" in content
+    assert "not valid JSON" not in content
 
 
 def test_as_dict_preserves_tool_calls_from_a_real_message():

@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from helpdesk import sdk_agent, tools
+from helpdesk import database, sdk_agent, tools
 
 
 @pytest.fixture()
@@ -62,6 +62,32 @@ def test_strict_mode_puts_optional_params_in_required(sdk_tools):
     assert set(generated["required"]) == {"customer_email", "status"}
     assert generated["properties"]["customer_email"]["default"] == ""
     assert generated["additionalProperties"] is False
+
+
+def test_a_literal_hint_is_what_puts_the_enum_in_the_generated_schema(sdk_tools):
+    """A generated schema is only as precise as the types you give it.
+
+    The SDK builds each schema from type hints and docstrings, but it can
+    only encode what the hints actually say. With `department: str` the
+    generated schema was {"type": "string"} and the four legal values
+    survived only as English prose in the description — no "enum" — while
+    the hand-written schema in tools.py carried a real one. The two
+    implementations were therefore handing the model different contracts,
+    which is precisely what this project claims they do not do.
+
+    `department: Literal["billing", ...]` is the fix: same runtime
+    behaviour, a strictly more precise schema. Literal is not enforced by
+    Python at runtime, so assign_department still normalises and validates
+    its input — see test_tools.py.
+    """
+    handwritten = next(
+        s["function"] for s in tools.TOOL_SCHEMAS
+        if s["function"]["name"] == "assign_department"
+    )["parameters"]["properties"]["department"]
+    generated = sdk_tools["assign_department"].params_json_schema
+    generated = generated["properties"]["department"]
+
+    assert generated["enum"] == handwritten["enum"] == list(database.DEPARTMENTS)
 
 
 def test_session_is_file_backed_so_memory_can_be_inspected(tmp_path):

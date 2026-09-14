@@ -43,3 +43,17 @@ def test_provider_defaults_to_ollama_so_the_project_runs_offline():
 
 def test_max_turns_is_an_int():
     assert load_settings({"MAX_TURNS": "3"}).max_turns == 3
+
+
+def test_a_non_numeric_max_turns_raises_ConfigError_not_ValueError():
+    """A typo in .env must fail the same readable way every other bad value does.
+
+    int() raises a bare ValueError, which app.py and run_raw.py do not
+    catch — the user would get a traceback instead of the one-line message
+    this module promises. The wrapper turns it into a ConfigError naming
+    the variable and the offending value.
+    """
+    with pytest.raises(ConfigError) as exc:
+        load_settings({"MAX_TURNS": "eight"})
+    assert "MAX_TURNS" in str(exc.value)
+    assert "eight" in str(exc.value)
