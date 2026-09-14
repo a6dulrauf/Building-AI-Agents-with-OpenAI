@@ -1,0 +1,5 @@
+openai-agents==0.22.2
+openai==3.13.0
+streamlit==1.63.0
+python-dotenv==1.2.3
+pytest==9.1.1
