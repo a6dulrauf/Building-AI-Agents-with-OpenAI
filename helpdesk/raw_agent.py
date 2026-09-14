@@ -30,7 +30,7 @@ from helpdesk.tools import TOOL_FUNCTIONS, TOOL_SCHEMAS, WRITE_TOOLS
 # Signature: approve(tool_name, arguments_dict) -> bool
 ApproveFn = Callable[[str, dict[str, Any]], bool]
 # Signature: on_event(kind, payload) -> None, where kind is one of
-# "tool_call", "tool_result", "rejected".
+# "tool_call", "tool_result", "rejected", "text_tool_call".
 EventFn = Callable[[str, dict[str, Any]], None]
 
 
@@ -85,6 +85,9 @@ def run_conversation(
         # --- 2. No tool calls means the model is done -------------------
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
+            ghost = _text_tool_call_name(message.content)
+            if ghost:
+                emit("text_tool_call", {"name": ghost})
             return message.content or ""
 
         # --- 3. Run each requested tool and feed the result back --------
@@ -145,6 +148,33 @@ def _execute(
         )
 
     return func(**arguments)
+
+
+def _text_tool_call_name(content: str | None) -> str | None:
+    """Spot a tool call the model WROTE OUT instead of actually calling.
+
+    Small models sometimes describe the call in the message body —
+
+        {"name": "assign_department", "parameters": {...}}
+
+    — rather than using the structured tool_calls channel. The loop then
+    sees no tool call, ends the turn, and the operator gets prose with no
+    approval prompt and no explanation of why nothing happened.
+
+    We deliberately do NOT execute what we find. Text the model happened
+    to type is not a request: honouring it would bypass the structured
+    contract the whole approval design rests on, and would mean a model
+    could trigger a write just by talking about one. We only name it, so
+    the human knows why the turn went quiet.
+    """
+    if not content or "{" not in content:
+        return None
+    looks_structured = any(
+        marker in content for marker in ('"name"', '"parameters"', '"arguments"')
+    )
+    if not looks_structured:
+        return None
+    return next((name for name in TOOL_FUNCTIONS if name in content), None)
 
 
 def _parse_arguments(raw: str) -> dict | None:

@@ -36,6 +36,16 @@ def show(kind: str, payload: dict) -> None:
         preview = collapsed[:limit] + ("..." if len(collapsed) > limit else "")
         colour = RED if result.startswith("error:") else GREY
         print(f"{colour}  <- {preview}{RESET}")
+    elif kind == "text_tool_call":
+        # The model described a call instead of making one. Say so plainly —
+        # otherwise the turn just ends with prose and no approval prompt,
+        # and there is nothing on screen explaining why nothing happened.
+        print(f"{RED}  !! the model WROTE a {payload['name']} call as text "
+              f"instead of calling it.{RESET}")
+        print(f"{RED}     No tool ran, so there was nothing to approve. "
+              f"This is a known{RESET}")
+        print(f"{RED}     limitation of small models. Rephrase and retry, "
+              f"or use a larger one.{RESET}")
     elif kind == "rejected":
         print(f"{RED}  <- rejected by you{RESET}")
 

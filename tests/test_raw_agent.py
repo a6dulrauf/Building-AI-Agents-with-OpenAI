@@ -268,3 +268,47 @@ def test_as_dict_preserves_tool_calls_from_a_real_message():
     # No stray non-None fields: everything sent back to the API next turn
     # must be exactly role/content/tool_calls, nothing extra.
     assert set(result.keys()) <= {"role", "content", "tool_calls"}
+
+
+def test_a_tool_call_written_as_text_is_reported_not_executed():
+    """A model that TYPES a tool call must not trigger one.
+
+    Small models sometimes emit {"name": "assign_department", ...} into the
+    message body instead of using the structured tool_calls channel. The
+    loop must notice and tell the operator — otherwise the turn ends with
+    prose, no approval prompt, and no explanation.
+
+    Critically it must NOT execute what it found. Text the model happened
+    to type is not a request; honouring it would let a model trigger a
+    write just by talking about one, bypassing approval entirely.
+    """
+    text = ('I propose assigning it.\n\n{"name": "assign_department", '
+            '"parameters": {"ticket_id": "T-1006", "department": "billing"}}')
+    client = FakeClient([_response(content=text)])
+    messages = raw_agent.new_conversation()
+    events = []
+
+    raw_agent.run_conversation(
+        client, "m", messages,
+        approve=lambda *_: True,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert ("text_tool_call", {"name": "assign_department"}) in events
+    # And nothing was written, despite approve returning True.
+    assert json.loads(tools.get_ticket("T-1006"))["department"] is None
+
+
+def test_ordinary_prose_is_not_mistaken_for_a_tool_call():
+    """The detector must not cry wolf on a normal answer."""
+    client = FakeClient([_response(content="This looks like a technical issue.")])
+    messages = raw_agent.new_conversation()
+    events = []
+
+    raw_agent.run_conversation(
+        client, "m", messages,
+        approve=lambda *_: True,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert not any(kind == "text_tool_call" for kind, _ in events)
