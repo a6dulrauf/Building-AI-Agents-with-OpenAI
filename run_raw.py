@@ -36,6 +36,11 @@ def show(kind: str, payload: dict) -> None:
         preview = collapsed[:limit] + ("..." if len(collapsed) > limit else "")
         colour = RED if result.startswith("error:") else GREY
         print(f"{colour}  <- {preview}{RESET}")
+    elif kind == "text_tool_call" and payload.get("retrying"):
+        print(f"{YELLOW}  !! the model wrote a {payload['name']} call as text "
+              f"instead of calling it.{RESET}")
+        print(f"{YELLOW}     Removing it from the transcript and asking it to "
+              f"retry properly...{RESET}")
     elif kind == "text_tool_call":
         # The model described a call instead of making one. Say so plainly —
         # otherwise the turn just ends with prose and no approval prompt,

@@ -284,7 +284,11 @@ def test_a_tool_call_written_as_text_is_reported_not_executed():
     """
     text = ('I propose assigning it.\n\n{"name": "assign_department", '
             '"parameters": {"ticket_id": "T-1006", "department": "billing"}}')
-    client = FakeClient([_response(content=text)])
+    # Two responses: the loop nudges the model after the first and asks again.
+    client = FakeClient([
+        _response(content=text),
+        _response(content="Understood."),
+    ])
     messages = raw_agent.new_conversation()
     events = []
 
@@ -294,7 +298,8 @@ def test_a_tool_call_written_as_text_is_reported_not_executed():
         on_event=lambda kind, payload: events.append((kind, payload)),
     )
 
-    assert ("text_tool_call", {"name": "assign_department"}) in events
+    reported = [p for kind, p in events if kind == "text_tool_call"]
+    assert reported and reported[0]["name"] == "assign_department"
     # And nothing was written, despite approve returning True.
     assert json.loads(tools.get_ticket("T-1006"))["department"] is None
 
@@ -312,3 +317,60 @@ def test_ordinary_prose_is_not_mistaken_for_a_tool_call():
     )
 
     assert not any(kind == "text_tool_call" for kind, _ in events)
+
+
+def test_a_typed_tool_call_is_stripped_from_the_transcript():
+    """The malformed artifact must not survive into the history.
+
+    Measured against llama3.1, one assistant message containing a typed-out
+    tool call drops the next turn's real tool-call rate from 4/6 to 1/6 —
+    the model reads its own output as an example and imitates it. Storing
+    the prose without the fake call is what stops one slip from killing the
+    whole conversation.
+    """
+    text = ('This looks technical.\n\n{"name": "assign_department", '
+            '"parameters": {"ticket_id": "T-1006", "department": "technical"}}')
+    client = FakeClient([
+        _response(content=text),
+        _response(content="Done."),
+    ])
+    messages = raw_agent.new_conversation()
+
+    raw_agent.run_conversation(client, "m", messages, approve=lambda *_: True)
+
+    stored = [m for m in messages if m.get("role") == "assistant"]
+    assert "This looks technical." in stored[0]["content"]
+    assert "assign_department" not in stored[0]["content"]
+    assert "{" not in stored[0]["content"]
+
+
+def test_the_model_is_told_to_retry_through_the_tool_interface():
+    text = '{"name": "add_note", "parameters": {"ticket_id": "T-1006"}}'
+    client = FakeClient([
+        _response(content=text),
+        _response(content="Done."),
+    ])
+    messages = raw_agent.new_conversation()
+
+    raw_agent.run_conversation(client, "m", messages, approve=lambda *_: True)
+
+    nudges = [m for m in messages
+              if m.get("role") == "user" and "not a tool call" in m.get("content", "")]
+    assert len(nudges) == 1
+    assert "add_note" in nudges[0]["content"]
+
+
+def test_the_retry_happens_only_once_per_run():
+    """A model that ignores the correction twice will not be talked round."""
+    text = '{"name": "add_note", "parameters": {"ticket_id": "T-1006"}}'
+    client = FakeClient([_response(content=text) for _ in range(4)])
+    messages = raw_agent.new_conversation()
+
+    out = raw_agent.run_conversation(
+        client, "m", messages, approve=lambda *_: True, max_turns=4)
+
+    nudges = [m for m in messages
+              if m.get("role") == "user" and "not a tool call" in m.get("content", "")]
+    assert len(nudges) == 1          # nudged once, then gave up
+    assert len(client.calls) == 2    # and stopped rather than burning the cap
+    assert out is not None

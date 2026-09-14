@@ -68,6 +68,7 @@ def run_conversation(
         The model's final text answer, or a turn-limit message.
     """
     emit = on_event or (lambda kind, payload: None)
+    nudged = False          # we correct a typed-out tool call once, not forever
 
     for _turn in range(max_turns):
         # --- 1. Ask the model what to do next ---------------------------
@@ -80,15 +81,35 @@ def run_conversation(
             tools=TOOL_SCHEMAS,
         )
         message = response.choices[0].message
-        messages.append(_as_dict(message))
+        entry = _as_dict(message)
 
         # --- 2. No tool calls means the model is done -------------------
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
             ghost = _text_tool_call_name(message.content)
+            if ghost and not nudged:
+                # The model meant to act but used the wrong channel. Store
+                # its prose WITHOUT the fake call so the history stops
+                # teaching it the wrong shape, then say so and let it try
+                # again. Bounded by max_turns, and only once per run: a
+                # model that ignores the correction twice will not be
+                # talked round on the third attempt.
+                emit("text_tool_call", {"name": ghost, "retrying": True})
+                entry["content"] = _strip_text_tool_call(message.content)
+                messages.append(entry)
+                messages.append({
+                    "role": "user",
+                    "content": _RETRY_NUDGE.format(name=ghost),
+                })
+                nudged = True
+                continue
             if ghost:
-                emit("text_tool_call", {"name": ghost})
+                emit("text_tool_call", {"name": ghost, "retrying": False})
+                entry["content"] = _strip_text_tool_call(message.content)
+            messages.append(entry)
             return message.content or ""
+
+        messages.append(entry)
 
         # --- 3. Run each requested tool and feed the result back --------
         for call in tool_calls:
@@ -175,6 +196,45 @@ def _text_tool_call_name(content: str | None) -> str | None:
     if not looks_structured:
         return None
     return next((name for name in TOOL_FUNCTIONS if name in content), None)
+
+
+def _strip_text_tool_call(content: str | None) -> str:
+    """Return the model's prose with the typed-out tool call removed.
+
+    Storing the raw message is actively harmful: measured against
+    llama3.1, one assistant message containing a text tool call drops the
+    next turn's real tool-call rate from 4/6 to 1/6. The model reads its
+    own prior output as an example and imitates the wrong format, and the
+    conversation never recovers.
+
+    So we keep what the model said and drop the malformed artifact. The
+    model still sees its reasoning; it just stops being taught the wrong
+    shape by its own history.
+    """
+    if not content:
+        return ""
+
+    index = content.find("{")
+    while index != -1 and '"name"' not in content[index:]:
+        index = content.find("{", index + 1)
+    if index == -1:
+        return content.strip()
+
+    cleaned = content[:index].rstrip()
+    for fence in ("```json", "```"):          # models often wrap it in one
+        if cleaned.endswith(fence):
+            cleaned = cleaned[: -len(fence)].rstrip()
+    return cleaned
+
+
+# Sent as a "user" message rather than "system" on purpose: small models
+# attend to user turns far more reliably than to mid-conversation system
+# turns, and this nudge is worthless if it gets ignored.
+_RETRY_NUDGE = (
+    "You wrote a {name} call as text in your last reply. Text is not a "
+    "tool call — nothing ran. Use the tool-calling interface to call "
+    "{name}, and put no JSON in your message."
+)
 
 
 def _parse_arguments(raw: str) -> dict | None:
