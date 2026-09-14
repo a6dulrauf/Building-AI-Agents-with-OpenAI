@@ -23,6 +23,8 @@ Two audiences, one codebase:
 - Run fully offline against Ollama; switch to OpenAI with one env var.
 - Keep business logic testable without an API key or network access.
 - Model real secret handling — nothing hardcoded, nothing committed.
+- Keep a human in front of every database write, so the agent
+  *suggests* actions rather than silently performing them.
 
 ## Non-goals
 
@@ -30,6 +32,13 @@ Two audiences, one codebase:
   README as next steps, not built. Scope discipline is the point.
 - Authentication, deployment, real ticketing-system integration.
 - Retry/backoff policies beyond a turn cap.
+
+## A note on terminology
+
+**AgentKit** is OpenAI's agent platform: Agent Builder (a visual canvas),
+ChatKit (embeddable chat UI), the Connector Registry, and Evals. The
+**Agents SDK** is its code-first Python component, and that is what this
+project uses. "AgentKit's Agents SDK" is the precise phrasing.
 
 ## Architecture
 
@@ -98,12 +107,15 @@ so ticket-history lookups return something interesting.
 
 Four tools, each mapping to a stated assignment requirement.
 
-| Tool | Requirement | Validation |
-|---|---|---|
-| `get_ticket(ticket_id)` | read support tickets | ID matches `T-\d+`; missing ID returns a clear error |
-| `search_tickets(customer_email=None, status=None)` | check ticket history | at least one filter required |
-| `assign_department(ticket_id, department)` | route to the right department | department in {billing, technical, account, shipping} |
-| `add_note(ticket_id, note)` | audit trail for humans | non-empty, <= 500 chars |
+| Tool | Requirement | Validation | Approval |
+|---|---|---|---|
+| `get_ticket(ticket_id)` | read support tickets | ID matches `T-\d+`; missing ID returns a clear error | auto |
+| `search_tickets(customer_email=None, status=None)` | check ticket history | at least one filter required | auto |
+| `assign_department(ticket_id, department)` | route to the right department | department in {billing, technical, account, shipping} | **human** |
+| `add_note(ticket_id, note)` | audit trail for humans | non-empty, <= 500 chars | **human** |
+
+Reads run freely. Writes are *proposed* and wait for a person — which is
+what the brief means by "suggest the right action".
 
 ### Error handling policy
 
@@ -122,6 +134,57 @@ loop and teach nothing.
 Unexpected exceptions are caught at the dispatch boundary and converted
 to a generic error string, so a bug in a tool degrades the turn rather
 than killing the session.
+
+## Human-in-the-loop write approval
+
+The agent never mutates the ticket database unsupervised. Write tools are
+marked `needs_approval=True`; the SDK pauses the run and surfaces the
+pending call, and a person decides.
+
+```python
+result = await Runner.run(agent, message, session=session)
+
+while result.interruptions:          # run is paused
+    state = result.to_state()        # serializable snapshot
+    for item in result.interruptions:
+        if human_said_yes(item):
+            state.approve(item)
+        else:
+            state.reject(item, rejection_message="Rejected by support agent.")
+    result = await Runner.run(agent, state)   # resume
+```
+
+`RunState` serializing to a string is load-bearing for Streamlit, which
+re-executes the whole script on every interaction. The paused run is held
+in `st.session_state` and resumed on the next click.
+
+A rejection is not a dead end: `rejection_message` is fed back to the
+model, which can then propose something else. Rejecting a wrong
+department assignment and watching the agent reconsider is the clearest
+demonstration in the project that this is an agent and not a chatbot.
+
+**The raw loop implements the same pause by hand** — a set of write-tool
+names, an `input("Approve? [y/N]: ")`, and an error string pushed back
+into `messages` on refusal. Seeing those twenty lines first is what makes
+`needs_approval=True` legible rather than magical.
+
+## UI transparency
+
+The Streamlit UI renders every tool call inline, not just the final
+answer:
+
+```
+🔧 get_ticket("T-1021")
+   → {"status": "open", "customer": "aisha@...", ...}
+🔧 search_tickets(customer_email="aisha@...")
+   → 3 prior tickets, 2 billing
+⏸  assign_department("T-1021", "billing")   [Approve] [Reject]
+```
+
+Without this the agent is a black box that silently edits a database.
+With it, the support team can audit what was read and what is about to
+change. This is the concrete mechanism behind the claim that the UI keeps
+a human in review — the claim would otherwise be decorative.
 
 ## Memory
 
@@ -210,7 +273,9 @@ helpdesk-agent/
 ## Environment
 
 - Python 3.12.10, `.venv` inside the project.
-- `openai-agents`, `openai`, `streamlit`, `python-dotenv`, `pytest`.
+- `openai-agents` (version pinned at install; HITL approval and
+  `agents.decorators.tool` require a recent release), `openai`,
+  `streamlit`, `python-dotenv`, `pytest`.
 - Ollama installed locally; server must be running to use that provider.
   The specific model is pinned once `ollama list` can be read.
 
@@ -221,7 +286,7 @@ learner writes the prose from evidence rather than from memory.
 
 | Task | Where the evidence lives |
 |---|---|
-| 1. Why agents over a chatbot | `run_raw.py` turn trace: the model chooses tools and acts, rather than only replying |
+| 1. Why agents over a chatbot | `run_raw.py` turn trace: the model chooses tools, acts, and re-plans after a rejection, rather than only replying |
 | 2. Architecture overview | The layer diagram above; `raw_agent.py` is the flow in executable form |
 | 3. Setup strategy | `.env.example`, `.gitignore`, `config.py` validation, README production note |
-| 4. Reliability | Memory across turns; validation returning correctable errors; Streamlit UI keeping a human in review |
+| 4. Reliability | Memory across turns; validation returning correctable errors; write approval + inline tool-call display putting a human in review |
