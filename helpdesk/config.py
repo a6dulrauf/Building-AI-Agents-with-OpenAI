@@ -71,7 +71,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         )
 
     if provider == "ollama":
-        model = env.get("OLLAMA_MODEL", "qwen2.5")
+        model = env.get("OLLAMA_MODEL", "llama3.1")
         api_key = OLLAMA_PLACEHOLDER_KEY
         base_url: str | None = OLLAMA_BASE_URL
     else:
