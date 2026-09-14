@@ -38,6 +38,7 @@ its own input. A model can send anything; the checks are the real guard.
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import re
 import sqlite3
@@ -93,11 +94,32 @@ def _validate_ticket_id(ticket_id: str) -> str | None:
 
 
 def safe_tool(func: Callable[..., str]) -> Callable[..., str]:
-    """Convert any unexpected exception into an error string.
+    """Convert a bad call into an error string instead of letting it explode.
 
-    A bug inside a tool should degrade a single turn, not end the
-    conversation. Validation errors are returned deliberately by each
-    function; this catches only the ones nobody predicted.
+    Two different failures land here, and they must be told apart because
+    only one of them is the model's problem to fix:
+
+    1. The MODEL called the tool wrong: an unknown keyword, a missing
+       required argument, a misspelled parameter name. This is a bad
+       *call*, not a bad tool, and it is correctable — the model can read
+       the error and retry with better arguments, the same way it
+       recovers from malformed JSON in raw_agent._parse_arguments. Report
+       it as "failed unexpectedly" instead and the model is told its
+       plumbing is broken when its arguments are; in a live run against
+       llama3.1 that produced exactly this message for
+       search_tickets(ticket_id=...) and the model gave up on tools
+       entirely rather than trying get_ticket.
+    2. The TOOL genuinely broke: a closed database connection, a bug in
+       repository code, anything nobody predicted. No amount of retrying
+       the arguments fixes this, so "failed unexpectedly" is the honest
+       description here — it really was the tool, not the caller.
+
+    inspect.signature(func).bind(*args, **kwargs) is what separates the
+    two: it performs the same argument-matching Python does when it calls
+    func, and raises the same TypeError for an unexpected or missing
+    argument — but it does so BEFORE func is called, so a bad call never
+    reaches the function body and can't be confused with a genuine
+    runtime failure inside it.
 
     functools.wraps is NOT optional here. It sets __wrapped__, which is
     what inspect.signature() follows to find the real parameters. Copying
@@ -110,6 +132,27 @@ def safe_tool(func: Callable[..., str]) -> Callable[..., str]:
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs) -> str:
+        signature = inspect.signature(func)
+        try:
+            signature.bind(*args, **kwargs)
+        except TypeError as exc:
+            # The call itself is malformed — reject it before func ever
+            # runs, and tell the model exactly what a valid call looks
+            # like rather than letting it read a Python TypeError as a
+            # tool malfunction.
+            params = ", ".join(signature.parameters) or "(none)"
+            message = (
+                f"{func.__name__} does not accept the arguments given "
+                f"({exc}). Its parameters are: {params}."
+            )
+            if "ticket_id" in kwargs and "ticket_id" not in signature.parameters:
+                # The classic symptom of "the model wanted a different
+                # tool": it has a specific ticket in hand and reached for
+                # the search/list tool instead of the single-ticket
+                # lookup. Point it at the right one directly.
+                message += " To look up a single ticket by ID, use get_ticket."
+            return _err(message)
+
         try:
             return func(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - deliberate catch-all boundary

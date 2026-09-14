@@ -23,11 +23,19 @@ def show(kind: str, payload: dict) -> None:
         args = json.dumps(payload["arguments"])
         print(f"{YELLOW}  -> calling {payload['name']}({args}){RESET}")
     elif kind == "tool_result":
-        # `or [""]` because splitlines() on an empty result returns [],
-        # and [0] on that is an IndexError in the printer, of all places.
-        first_line = (payload["result"].splitlines() or [""])[0][:100]
-        colour = RED if payload["result"].startswith("error:") else GREY
-        print(f"{colour}  <- {first_line}{RESET}")
+        # Tool results are pretty-printed (multi-line) JSON, so the raw
+        # first line is just an opening "{" — that told the operator
+        # nothing while 300+ characters of actual ticket data sat unseen
+        # on the following lines. Collapse whitespace across the whole
+        # result into one line first, then take a useful prefix of that.
+        # str.split()/" ".join() also handles an empty result safely
+        # (collapsed == ""), so no separate empty-result guard is needed.
+        result = payload["result"]
+        collapsed = " ".join(result.split())
+        limit = 150
+        preview = collapsed[:limit] + ("..." if len(collapsed) > limit else "")
+        colour = RED if result.startswith("error:") else GREY
+        print(f"{colour}  <- {preview}{RESET}")
     elif kind == "rejected":
         print(f"{RED}  <- rejected by you{RESET}")
 

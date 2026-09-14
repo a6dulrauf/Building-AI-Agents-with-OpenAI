@@ -89,6 +89,44 @@ def test_only_writes_require_approval():
     assert tools.WRITE_TOOLS == frozenset({"assign_department", "add_note"})
 
 
+def test_unknown_keyword_argument_names_the_bad_argument_and_valid_ones():
+    """An argument-binding mistake is the model's fault, not the tool's.
+
+    The message must name what was wrong AND list the real parameters, so
+    the model can self-correct on the next turn instead of giving up on
+    tools the way it did against llama3.1 in the T-1006 transcript.
+    """
+    result = tools.search_tickets(bogus="x")
+    assert result.startswith("error:")
+    assert "bogus" in result
+    assert "customer_email" in result
+    assert "status" in result
+    assert "failed unexpectedly" not in result
+
+
+def test_ticket_id_passed_to_search_tickets_points_at_get_ticket():
+    """The specific mistake from the live transcript: ticket_id sent to
+    search_tickets, which has no such parameter. The error should point
+    at the tool that actually accepts a ticket_id.
+    """
+    result = tools.search_tickets(ticket_id="T-1006")
+    assert result.startswith("error:")
+    assert "ticket_id" in result
+    assert "get_ticket" in result
+    assert "failed unexpectedly" not in result
+
+
+def test_missing_required_argument_is_a_binding_error_not_a_crash():
+    """A missing required argument is also an argument-binding mistake,
+    not an internal fault — it must be caught and explained the same way
+    as an unknown keyword, before the function body ever runs.
+    """
+    result = tools.get_ticket()
+    assert result.startswith("error:")
+    assert "ticket_id" in result
+    assert "failed unexpectedly" not in result
+
+
 def test_unexpected_errors_become_error_strings_not_crashes(tmp_path):
     """A bug in a tool must degrade one turn, not kill the session.
 
