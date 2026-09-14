@@ -8,6 +8,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from openai.types.chat import ChatCompletionMessage
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
 
 from helpdesk.database import connect, init_schema, seed
 from helpdesk import raw_agent, tools
@@ -160,3 +165,41 @@ def test_an_unknown_tool_name_does_not_crash_the_loop():
     assert out == "Sorry about that."
     tool_messages = [m for m in messages if m.get("role") == "tool"]
     assert tool_messages[0]["content"].startswith("error:")
+
+
+def test_as_dict_preserves_tool_calls_from_a_real_message():
+    """Pin _as_dict's fidelity against a real ChatCompletionMessage.
+
+    The fixtures above use a SimpleNamespace whose fake model_dump always
+    returns {"role": "assistant", "content": content} — it never exercises
+    what happens to tool_calls when a real pydantic message is converted.
+    That matters a great deal: the "tool" messages appended right after an
+    assistant turn each carry a tool_call_id, and the OpenAI API requires
+    that id to have been declared in the *preceding* assistant message's
+    tool_calls. If _as_dict ever dropped tool_calls (or leaked a stray
+    non-None field) for a real message, multi-turn tool use would still
+    pass every test above yet be rejected by a real API on the next turn.
+    This test would catch that; none of the others can.
+    """
+    message = ChatCompletionMessage(
+        role="assistant",
+        content=None,
+        tool_calls=[
+            ChatCompletionMessageToolCall(
+                id="call_abc123",
+                type="function",
+                function=Function(
+                    name="get_ticket",
+                    arguments='{"ticket_id": "T-1006"}',
+                ),
+            )
+        ],
+    )
+
+    result = raw_agent._as_dict(message)
+
+    assert "tool_calls" in result
+    assert result["tool_calls"][0]["id"] == "call_abc123"
+    # No stray non-None fields: everything sent back to the API next turn
+    # must be exactly role/content/tool_calls, nothing extra.
+    assert set(result.keys()) <= {"role", "content", "tool_calls"}

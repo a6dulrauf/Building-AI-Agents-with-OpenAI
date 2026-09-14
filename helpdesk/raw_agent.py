@@ -30,7 +30,7 @@ from helpdesk.tools import TOOL_FUNCTIONS, TOOL_SCHEMAS, WRITE_TOOLS
 # Signature: approve(tool_name, arguments_dict) -> bool
 ApproveFn = Callable[[str, dict[str, Any]], bool]
 # Signature: on_event(kind, payload) -> None, where kind is one of
-# "thinking", "tool_call", "tool_result", "rejected".
+# "tool_call", "tool_result", "rejected".
 EventFn = Callable[[str, dict[str, Any]], None]
 
 
