@@ -374,3 +374,43 @@ def test_the_retry_happens_only_once_per_run():
     assert len(nudges) == 1          # nudged once, then gave up
     assert len(client.calls) == 2    # and stopped rather than burning the cap
     assert out is not None
+
+
+def test_an_invented_tool_written_as_text_is_named_and_corrected():
+    """The failure that prompted this: the model invented remove_note.
+
+    An earlier version of the detector matched only REAL tool names, so a
+    hallucinated one slipped through unflagged — leaving the operator to
+    wonder why nothing happened to a tool that never existed, while the
+    artifact quietly poisoned the rest of the conversation.
+    """
+    client = FakeClient([
+        _response(content='{"name": "remove_note", "parameters": {"note_id": "1"}}'),
+        _response(content="Understood."),
+    ])
+    messages = raw_agent.new_conversation()
+    events = []
+
+    raw_agent.run_conversation(
+        client, "m", messages, approve=lambda *_: True,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    reported = [p for kind, p in events if kind == "unknown_text_tool"]
+    assert reported and reported[0]["name"] == "remove_note"
+
+    correction = [m for m in messages
+                  if m.get("role") == "user" and "no remove_note tool" in m.get("content", "")]
+    assert len(correction) == 1
+    # It must also be told what DOES exist, or it cannot recover.
+    for real in ("get_ticket", "add_note", "assign_department", "search_tickets"):
+        assert real in correction[0]["content"]
+
+
+def test_there_is_no_tool_that_deletes_anything():
+    """Deletion is deliberately not offered. Guard it so it stays that way."""
+    assert not any(
+        word in name
+        for name in tools.TOOL_FUNCTIONS
+        for word in ("remove", "delete", "drop", "purge")
+    )

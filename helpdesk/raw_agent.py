@@ -21,6 +21,7 @@ be able to point at what the framework replaced.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -87,6 +88,26 @@ def run_conversation(
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
             ghost = _text_tool_call_name(message.content)
+            if ghost and ghost not in TOOL_FUNCTIONS:
+                # An invented tool. Retrying is pointless — it does not
+                # exist and never will. Say so, name what does exist, and
+                # strip the artifact so it stops contaminating the history.
+                emit("unknown_text_tool", {"name": ghost})
+                entry["content"] = _strip_text_tool_call(message.content)
+                messages.append(entry)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"There is no {ghost} tool. Nothing ran. The only "
+                        f"tools that exist are: {', '.join(TOOL_FUNCTIONS)}. "
+                        "Do not claim you performed an action you could not "
+                        "perform."
+                    ),
+                })
+                if nudged:
+                    return _strip_text_tool_call(message.content)
+                nudged = True
+                continue
             if ghost and not nudged:
                 # The model meant to act but used the wrong channel. Store
                 # its prose WITHOUT the fake call so the history stops
@@ -195,6 +216,15 @@ def _text_tool_call_name(content: str | None) -> str | None:
     )
     if not looks_structured:
         return None
+
+    # Pull out WHATEVER name it used, not just names we recognise. An
+    # earlier version matched only real tools, so an invented one like
+    # remove_note slipped through unflagged — and those are the calls that
+    # most need reporting, because the operator is left wondering why
+    # nothing happened to a tool that never existed.
+    match = re.search(r'"name"\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"', content)
+    if match:
+        return match.group(1)
     return next((name for name in TOOL_FUNCTIONS if name in content), None)
 
 

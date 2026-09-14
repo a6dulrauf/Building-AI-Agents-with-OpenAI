@@ -36,6 +36,10 @@ def show(kind: str, payload: dict) -> None:
         preview = collapsed[:limit] + ("..." if len(collapsed) > limit else "")
         colour = RED if result.startswith("error:") else GREY
         print(f"{colour}  <- {preview}{RESET}")
+    elif kind == "unknown_text_tool":
+        print(f"{RED}  !! the model invented a tool called "
+              f"'{payload['name']}' — it does not exist.{RESET}")
+        print(f"{RED}     Nothing ran. Telling it which tools are real.{RESET}")
     elif kind == "text_tool_call" and payload.get("retrying"):
         print(f"{YELLOW}  !! the model wrote a {payload['name']} call as text "
               f"instead of calling it.{RESET}")
