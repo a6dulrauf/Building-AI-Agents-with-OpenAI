@@ -922,11 +922,25 @@ def test_only_writes_require_approval():
     assert tools.WRITE_TOOLS == frozenset({"assign_department", "add_note"})
 
 
-def test_unexpected_errors_become_error_strings_not_crashes():
-    """A bug in a tool must degrade one turn, not kill the session."""
-    tools.set_connection(None)  # force an internal failure
+def test_unexpected_errors_become_error_strings_not_crashes(tmp_path):
+    """A bug in a tool must degrade one turn, not kill the session.
+
+    We inject a CLOSED connection so the tool hits sqlite3.ProgrammingError
+    deep inside repository code — an exception nobody wrote a check for,
+    which is exactly what the safe_tool boundary exists to absorb.
+
+    Note we do NOT test this by passing None: set_connection(None) resets
+    the lazy-init flag, so _get_conn() would happily open the real
+    database and the call would succeed.
+    """
+    broken = connect(str(tmp_path / "broken.db"))
+    init_schema(broken)
+    broken.close()
+    tools.set_connection(broken)
+
     result = tools.get_ticket("T-1006")
     assert result.startswith("error:")
+    assert "get_ticket" in result  # the message names the failing tool
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
