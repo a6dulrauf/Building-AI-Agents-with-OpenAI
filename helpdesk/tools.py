@@ -142,7 +142,7 @@ def safe_tool(func: Callable[..., str]) -> Callable[..., str]:
             # tool malfunction.
             params = ", ".join(signature.parameters) or "(none)"
             message = (
-                f"{func.__name__} does not accept the arguments given "
+                f"{func.__name__} was called with the wrong arguments "
                 f"({exc}). Its parameters are: {params}."
             )
             if "ticket_id" in kwargs and "ticket_id" not in signature.parameters:

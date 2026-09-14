@@ -33,6 +33,7 @@ GREEN, RED, YELLOW, GREY, BOLD, RESET = (
 
 passed: list[str] = []
 failed: list[str] = []
+skipped: list[str] = []
 
 
 # ---------------------------------------------------------------- helpers
@@ -53,6 +54,32 @@ def snapshot(ticket_id: str = TICKET) -> dict:
     notes = repository.get_notes(conn, ticket_id)
     conn.close()
     return {"department": ticket.get("department"), "notes": len(notes)}
+
+
+def reset_ticket(ticket_id: str = TICKET) -> None:
+    """Return ONE ticket to its untriaged state.
+
+    The live scenarios need this. Scenario 6 assigns T-1006 to technical,
+    so without a reset a later "assign to technical" writes successfully
+    but changes nothing observable — the value is already the target. A
+    state-comparing harness cannot see an idempotent write, and would call
+    a working system broken.
+    """
+    conn = connect(DB)
+    conn.execute("DELETE FROM notes WHERE ticket_id = ?", (ticket_id,))
+    conn.execute("UPDATE tickets SET department = NULL WHERE id = ?", (ticket_id,))
+    conn.commit()
+    conn.close()
+
+
+def skip(name: str, why: str) -> None:
+    """Record that a scenario could not run — NOT that it succeeded.
+
+    A test that passes because it never executed is worse than one that
+    fails: it reports safety it did not verify.
+    """
+    skipped.append(name)
+    print(f"  {YELLOW}SKIP{RESET} — {why}")
 
 
 def banner(n: int, title: str) -> None:
@@ -163,6 +190,81 @@ def live_scenarios() -> None:
         return calls
 
     banner(7, "LIVE — read-only question, no write should occur")
+    reset_ticket()
+    before = snapshot()
+    run(f"Look at ticket {TICKET} and tell me which department it belongs to.",
+        approve=True)
+    verdict("live read-only", before, snapshot(), expect_change=False)
+
+    banner(8, "LIVE — write proposed, human REJECTS (answers 'n')")
+    reset_ticket()
+    before = snapshot()
+    calls = run(f"Assign ticket {TICKET} to the right department.", approve=False)
+    if "assign_department" not in calls:
+        skip("live reject",
+             "the model never proposed assign_department, so the rejection "
+             "path was not exercised. Nothing changed, but that proves "
+             "nothing — a small model simply failed to try.")
+    else:
+        verdict("rejected write not persisted", before, snapshot(),
+                expect_change=False)
+
+    banner(9, "LIVE — write proposed, human APPROVES (answers 'y')")
+    reset_ticket()          # start unassigned so a successful write is visible
+    before = snapshot()
+    calls = run(f"Assign ticket {TICKET} to the right department.", approve=True)
+    if "assign_department" not in calls:
+        skip("live approve",
+             "the model never proposed assign_department, so nothing could "
+             "be written. Model behaviour, not a code fault.")
+    else:
+        verdict("approved write persists", before, snapshot(), expect_change=True)
+
+    tools.set_connection(None)
+    conn.close()
+
+
+# ---------------------------------------------------------- live scenarios
+def live_scenarios() -> None:
+    """Drive the REAL agent loop against the configured model.
+
+    Approval decisions are scripted rather than typed, so the whole run is
+    non-interactive and repeatable. What the model chooses to do is not
+    scripted — that is the part being tested.
+    """
+    from helpdesk.providers import build_sync_client
+    from helpdesk.raw_agent import new_conversation, run_conversation
+
+    settings = load_settings()
+    print(f"{GREY}model: {settings.provider}/{settings.model}{RESET}")
+    client = build_sync_client(settings)
+
+    conn = connect(DB)
+    tools.set_connection(conn)
+
+    def run(prompt: str, *, approve: bool):
+        calls: list[str] = []
+
+        def on_event(kind, payload):
+            if kind == "tool_call":
+                calls.append(payload["name"])
+                print(f"  {YELLOW}-> {payload['name']}({payload['arguments']}){RESET}")
+            elif kind == "tool_result":
+                line = " ".join(payload["result"].split())[:78]
+                colour = RED if payload["result"].startswith("error:") else GREY
+                print(f"  {colour}<- {line}{RESET}")
+
+        messages = new_conversation()
+        messages.append({"role": "user", "content": prompt})
+        answer = run_conversation(
+            client, settings.model, messages,
+            approve=lambda *_: approve, on_event=on_event,
+            max_turns=settings.max_turns,
+        )
+        print(f"  {GREY}agent:{RESET} {' '.join(answer.split())[:200]}")
+        return calls
+
+    banner(7, "LIVE — read-only question, no write should occur")
     before = snapshot()
     run(f"Look at ticket {TICKET} and tell me which department it belongs to.",
         approve=True)
@@ -214,9 +316,13 @@ def main() -> None:
                   f"curl -s http://localhost:11434/api/tags{RESET}")
 
     print(f"\n{BOLD}{'═' * 68}{RESET}")
-    print(f"{GREEN}passed: {len(passed)}{RESET}   {RED}failed: {len(failed)}{RESET}")
+    print(f"{GREEN}passed: {len(passed)}{RESET}   "
+          f"{RED}failed: {len(failed)}{RESET}   "
+          f"{YELLOW}skipped: {len(skipped)}{RESET}")
     for name in failed:
         print(f"  {RED}FAILED: {name}{RESET}")
+    for name in skipped:
+        print(f"  {YELLOW}SKIPPED (not verified): {name}{RESET}")
     print(f"\n{GREY}Inspect the data yourself:{RESET}")
     print(f'  sqlite3 -header -column {DB} \\\n'
           f'    "SELECT id, status, COALESCE(department,\'—\') AS dept FROM tickets;"')
