@@ -154,9 +154,15 @@ while result.interruptions:          # run is paused
     result = await Runner.run(agent, state)   # resume
 ```
 
-`RunState` serializing to a string is load-bearing for Streamlit, which
-re-executes the whole script on every interaction. The paused run is held
-in `st.session_state` and resumed on the next click.
+The paused run is held in `st.session_state`, which survives Streamlit's
+re-execution of the whole script on every interaction.
+
+*Corrected during implementation planning:* an earlier draft of this spec
+claimed `RunState` string serialization was load-bearing here. It is not.
+Streamlit reruns happen in the same process, so `session_state` holds live
+Python objects and the `RunResult` is kept directly. `to_string()` /
+`RunState.from_json()` matter only across a process boundary — persisting
+a paused run across a server restart, or handing it to a worker.
 
 A rejection is not a dead end: `rejection_message` is fed back to the
 model, which can then propose something else. Rejecting a wrong
