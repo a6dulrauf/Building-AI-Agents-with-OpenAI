@@ -19,14 +19,13 @@ Run with:  .venv/bin/streamlit run app.py
 """
 from __future__ import annotations
 
-import json
-
 import streamlit as st
 
 from helpdesk.config import ConfigError, load_settings
 from helpdesk.sdk_agent import (
     build_agent,
     build_session,
+    clear_memory,
     describe_interruption,
     resume,
     send,
@@ -98,7 +97,7 @@ def record(role: str, content: str, activity: list[dict] | None = None) -> None:
     )
 
 
-def handle_result(agent, session, result) -> None:
+def handle_result(result) -> None:
     """Store a run's output, or park it if it is waiting on approval."""
     activity = render_tool_activity(result)
 
@@ -133,7 +132,7 @@ def apply_decisions(agent, session) -> None:
 
     st.session_state.pending = None
     st.session_state.decisions = {}
-    handle_result(agent, session, resume(agent, session, state))
+    handle_result(resume(agent, session, state))
 
 
 # --------------------------------------------------------------------------
@@ -159,8 +158,10 @@ with st.sidebar:
     if st.button("Clear conversation", use_container_width=True):
         # Clears BOTH the rendered transcript and the agent's actual
         # memory. Forgetting the second is a classic bug: the screen looks
-        # empty but the agent still remembers everything.
-        session.clear_session()
+        # empty but the agent still remembers everything. clear_memory()
+        # (not session.clear_session() directly) is what actually awaits
+        # the coroutine instead of silently discarding it.
+        clear_memory(session)
         st.session_state.transcript = []
         st.session_state.pending = None
         st.session_state.decisions = {}
@@ -181,19 +182,37 @@ for entry in st.session_state.transcript:
 # --- Pending approvals ----------------------------------------------------
 if st.session_state.pending is not None:
     st.warning("The agent is proposing an action. Approve or reject it.")
-    for item in st.session_state.pending.interruptions:
+    interruptions = st.session_state.pending.interruptions
+    for item in interruptions:
         name, arguments = describe_interruption(item)
         st.markdown(f"**Proposed:** `{name}`")
         st.json(arguments)
 
+        if item.call_id in st.session_state.decisions:
+            # Already decided this rerun, but the batch isn't resolved yet
+            # (see below) - show the choice as settled instead of
+            # re-rendering live buttons the user could click again.
+            if st.session_state.decisions[item.call_id]:
+                st.caption("✅ approved — waiting for the remaining decisions")
+            else:
+                st.caption("❌ rejected — waiting for the remaining decisions")
+            continue
+
         left, right = st.columns(2)
-        if left.button("✅ Approve", key=f"a-{item.call_id}", use_container_width=True):
-            st.session_state.decisions[item.call_id] = True
-            apply_decisions(agent, session)
-            st.rerun()
-        if right.button("❌ Reject", key=f"r-{item.call_id}", use_container_width=True):
-            st.session_state.decisions[item.call_id] = False
-            apply_decisions(agent, session)
+        approve_clicked = left.button(
+            "✅ Approve", key=f"a-{item.call_id}", use_container_width=True
+        )
+        reject_clicked = right.button(
+            "❌ Reject", key=f"r-{item.call_id}", use_container_width=True
+        )
+        if approve_clicked or reject_clicked:
+            st.session_state.decisions[item.call_id] = approve_clicked
+            # The SDK resumes the run once, with every interruption
+            # decided. Resolving as soon as ANY single item is clicked
+            # would silently reject whatever the user had not yet
+            # clicked, so wait until every pending item has a decision.
+            if len(st.session_state.decisions) == len(interruptions):
+                apply_decisions(agent, session)
             st.rerun()
 
 # --- Chat input -----------------------------------------------------------
@@ -201,7 +220,7 @@ elif prompt := st.chat_input("Ask about a ticket, e.g. 'triage T-1006'"):
     record("user", prompt)
     with st.spinner("Thinking..."):
         try:
-            handle_result(agent, session, send(agent, session, prompt, settings.max_turns))
+            handle_result(send(agent, session, prompt, settings.max_turns))
         except Exception as exc:  # noqa: BLE001 - surface errors instead of a blank page
             record("assistant", f"Something went wrong: `{exc}`")
     st.rerun()

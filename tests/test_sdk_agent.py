@@ -5,6 +5,8 @@ because that description is the entire contract between your code and the
 model, and it is generated rather than written, which makes it worth
 checking.
 """
+import asyncio
+
 import pytest
 
 from helpdesk import sdk_agent, tools
@@ -68,3 +70,25 @@ def test_session_is_file_backed_so_memory_can_be_inspected(tmp_path):
     settings = load_settings({"CHAT_DB_PATH": str(tmp_path / "chat.db")})
     session = sdk_agent.build_session(settings, "test-session")
     assert str(tmp_path / "chat.db") in str(session.db_path)
+
+
+def test_clear_memory_actually_clears_the_session(tmp_path):
+    """Guards against the un-awaited-coroutine bug.
+
+    SQLiteSession.clear_session() is async. Calling it as a bare statement
+    (no await, no asyncio.run) builds a coroutine object and discards it
+    without ever running it — the session silently keeps every item. This
+    test would have caught that: it fails if clear_memory() stops routing
+    through _sync() and goes back to calling clear_session() bare.
+    """
+    from helpdesk.config import load_settings
+
+    settings = load_settings({"CHAT_DB_PATH": str(tmp_path / "chat.db")})
+    session = sdk_agent.build_session(settings, "test-session")
+
+    asyncio.run(session.add_items([{"role": "user", "content": "hello"}]))
+    assert asyncio.run(session.get_items()) != []
+
+    sdk_agent.clear_memory(session)
+
+    assert asyncio.run(session.get_items()) == []

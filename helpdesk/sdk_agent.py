@@ -89,6 +89,17 @@ def resume(agent: Agent, session: SQLiteSession, state: RunState) -> RunResult:
     return _sync(Runner.run(agent, state, session=session))
 
 
+def clear_memory(session: SQLiteSession) -> None:
+    """Erase the conversation history for this session.
+
+    clear_session() is a coroutine. Calling it without awaiting builds a
+    coroutine object and throws it away, which silently does nothing —
+    the screen empties while the agent remembers everything. Routing it
+    through _sync() is what makes the button actually work.
+    """
+    _sync(session.clear_session())
+
+
 def describe_interruption(item: Any) -> tuple[str, dict]:
     """Return (tool_name, arguments) for a pending approval, for display.
 
