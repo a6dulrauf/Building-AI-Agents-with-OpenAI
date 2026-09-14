@@ -289,6 +289,37 @@ def live_scenarios() -> None:
     else:
         verdict("approved write persists", before, snapshot(), expect_change=True)
 
+    banner(10, "LIVE — note proposed, human REJECTS (answers 'n')")
+    reset_ticket()
+    before = snapshot()
+    calls = run(f"Add a note to ticket {TICKET} summarising the likely cause.",
+                approve=False)
+    if "add_note" not in calls:
+        skip("live note reject",
+             "the model never proposed add_note, so the rejection path was "
+             "not exercised.")
+    else:
+        verdict("rejected note not persisted", before, snapshot(),
+                expect_change=False)
+
+    banner(11, "LIVE — note proposed, human APPROVES (answers 'y')")
+    reset_ticket()
+    before = snapshot()
+    calls = run(f"Add a note to ticket {TICKET} summarising the likely cause.",
+                approve=True)
+    if "add_note" not in calls:
+        skip("live note approve",
+             "the model never proposed add_note, so nothing could be written.")
+    else:
+        verdict("approved note persists", before, snapshot(), expect_change=True)
+        # Show the row itself — a count going up is weaker evidence than the
+        # text the agent actually wrote appearing in the table.
+        conn_check = connect(DB)
+        for note in repository.get_notes(conn_check, TICKET):
+            print(f"  {GREEN}row written:{RESET} "
+                  f"[{note['author']}] {note['note'][:70]}")
+        conn_check.close()
+
     tools.set_connection(None)
     conn.close()
 
