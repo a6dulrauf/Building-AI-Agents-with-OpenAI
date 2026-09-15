@@ -29,6 +29,12 @@ here, so treat them as untested. Small models such as `llama3.2:1b` do not
 call tools reliably at all and will produce failures that look like bugs
 in your code.
 
+## How it works, explained
+
+[**Inside the Agent Loop**](docs/agent-loop.md) — a diagram and step-by-step walkthrough
+of what happens between a prompt and an answer. Start there if you want the mechanism
+before the code.
+
 ## Read it in this order
 
 1. `helpdesk/raw_agent.py` — the loop, ~60 lines, no framework.
