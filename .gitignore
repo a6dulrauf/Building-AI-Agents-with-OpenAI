@@ -1,12 +1,12 @@
 # Secrets — never commit these
 .env
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 
-# Generated database
-data/*.db
+# Generated databases (patterns are unanchored so they apply to every project)
+*.db
 
 # Python
 __pycache__/
@@ -16,5 +16,10 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Personal coursework material, not part of any project
 ASSIGNMENT-NOTES.md
-Helpdesk-Agent-Evidence-Sheet.pdf
+*-Evidence-Sheet.pdf
+
+# Agent workflow scratch
+.superpowers/
